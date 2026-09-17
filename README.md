@@ -115,8 +115,40 @@ GITHUB_SECRET=your_github_oauth_client_secret
 GOOGLE_ID=your_google_oauth_client_id
 GOOGLE_SECRET=your_google_oauth_client_secret
 ```
+## Setup & Execution
 
+### Prerequisites
+* Python 3.10 or higher
+* Node.js 18 or higher
+* A Supabase PostgreSQL database
 
+### 1. Run the Backend
+Open a terminal and navigate to the backend folder to set up the Python environment and run the data pipeline.
+```bash
+cd backend
+python -m venv venv
+
+# Activate the virtual environment
+# Windows:
+venv\Scripts\activate
+# Mac/Linux:
+source venv/bin/activate
+
+# Install the required libraries
+pip install psycopg2-binary playwright google-genai pydantic python-dotenv fastapi uvicorn pypdf python-multipart
+
+# Install Playwright's browser binaries
+playwright install chromium
+```
+Run the pipeline scripts in order to populate the database:
+```bash
+python scrape.py      # Scrapes raw HTML
+python extract.py     # Structures data into JSON via Gemini
+python embed.py       # Generates vector embeddings
+
+# Start the FastAPI server
+uvicorn main:app --reload --port 8000
+```
 
 ### Honest List of What is Unfinished
 
