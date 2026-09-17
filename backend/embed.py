@@ -1,10 +1,10 @@
 import os
 import psycopg2
-import google.generativeai as genai
+from google import genai
 from dotenv import load_dotenv
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 dbUrl = os.getenv("DATABASE_URL")
 
 def embedJobs():
@@ -26,11 +26,11 @@ def embedJobs():
         
         try:
             # text-embedding-004 outputs a 768-dimensional vector
-            res = genai.embed_content(
-                model="models/text-embedding-004",
-                content=textToEmbed
+            res = client.models.embed_content(
+                model="text-embedding-004",
+                contents=textToEmbed
             )
-            emb = res['embedding']
+            emb = res.embeddings[0].values
             
             # Update the database
             cursor.execute("UPDATE strList SET emb = %s::vector WHERE id = %s", (emb, jid))

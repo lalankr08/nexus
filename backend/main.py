@@ -6,14 +6,17 @@ from dotenv import load_dotenv
 
 from fastapi import UploadFile, File
 import pypdf
-import google.generativeai as genai
+from google import genai
+from google.genai import types
+from google.genai.models import Models
 
-# Import functions from your existing scripts
-from scrape import setupDb, scrapeHn, scrapeGh
+from scraper import setupDb, scrapeHn, scrapeGh
 from extract import runExtract  
 
+Models._logged_afc_warning = True
 load_dotenv()
 dbUrl = os.getenv("DATABASE_URL")
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 app = FastAPI(title="Nexus API")
 
@@ -27,7 +30,7 @@ app.add_middleware(
 
 def runPipeline():
     """Background task to sequence scraping then extraction."""
-    # 1. Scrape HTML to rawList
+    
     conn = setupDb()
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
@@ -41,7 +44,7 @@ def runPipeline():
         browser.close()
     conn.close()
     
-    # 2. Extract JSON to strList via Gemini
+    
     runExtract()
 
 @app.post("/api/sync")
@@ -82,23 +85,21 @@ def fetchJobs():
 
 @app.post("/api/match")
 async def matchResume(file: UploadFile = File(...)):
-    # 1. Parse PDF
+
     pdf = pypdf.PdfReader(file.file)
-    resText = "".join(pg.extract_text() for pg in pdf.pages)
+    resText = "".join(pg.extract_text() or "" for pg in pdf.pages)
     
-    # 2. Embed Resume
-    embRes = genai.embed_content(
-        model="models/text-embedding-004", 
-        content=resText
+    embRes = client.models.embed_content(
+        model="text-embedding-004", 
+        contents=resText
     )
-    resVector = embRes['embedding']
+    resVector = embRes.embeddings[0].values
     
-    # 3. Vector Search (Cosine Similarity)
     conn = psycopg2.connect(dbUrl)
     cursor = conn.cursor()
     
     cursor.execute("""
-        SELECT id, title, company, srcUrl, 1 - (emb <=> %s::vector) AS score, skills 
+        SELECT id, title, company, loc, srcUrl, 1 - (emb <=> %s::vector) AS score, skills 
         FROM strList 
         WHERE emb IS NOT NULL
         ORDER BY emb <=> %s::vector 
@@ -107,22 +108,26 @@ async def matchResume(file: UploadFile = File(...)):
     
     matches = cursor.fetchall()
     
-    # 4. Generate One-Line Justification
-    model = genai.GenerativeModel("gemini-1.5-flash")
     data = []
     
     for m in matches:
-        jid, title, comp, url, score, skills = m
+        jid, title, comp, loc, url, score, skills = m
         prompt = f"Resume: {resText[:1500]}\nJob: {title} at {comp}. Skills: {skills}\nWrite exactly one short sentence justifying why this is a match."
         
-        just = model.generate_content(prompt).text.strip()
+        gen_res = client.models.generate_content(
+            model="gemini-flash-lite-latest",
+            contents=prompt
+        )
+        just = gen_res.text.strip() if gen_res.text else ""
         
         data.append({
             "id": jid, 
             "title": title, 
             "company": comp, 
+            "loc": loc,
             "url": url, 
             "score": round(score, 2), 
+            "matchScore": round(score, 2), 
             "just": just
         })
         
