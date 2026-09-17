@@ -149,6 +149,15 @@ python embed.py       # Generates vector embeddings
 # Start the FastAPI server
 uvicorn main:app --reload --port 8000
 ```
+### 2. Run the Frontend
+Open a second terminal window for the Next.js application.
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+Open http://localhost:3000 in your browser to view the application.
 
 ### Honest List of What is Unfinished
 
