@@ -41,11 +41,11 @@ def runExtract():
     rawJobs = cursor.fetchall()
 
     if not rawJobs:
-        print("[Done] No new jobs to extract.")
+        print("[done] no new jobs, going back to sleep")
         conn.close()
         return
 
-    print(f"[Info] Found {len(rawJobs)} jobs. Processing in batches of {batchSize}...")
+    print(f"[info] found {len(rawJobs)} jobs to parse, batching by {batchSize}...")
 
     for i in range(0, len(rawJobs), batchSize):
         chunk = rawJobs[i:i + batchSize]
@@ -58,6 +58,7 @@ def runExtract():
         
         while not success and attempts < 5:
             try:
+                # gemini please be gentle with my free quota
                 res = client.models.generate_content(
                     model="gemini-flash-lite-latest", 
                     contents=prompt,
@@ -91,9 +92,10 @@ def runExtract():
                 conn.commit()
 
                 for j in parsedJobs:
-                    print(f"[Extracted] {j.get('srcUrl')}")
+                    print(f"[saved] {j.get('srcUrl')}")
 
                 success = True
+                # to stop rate limit
                 time.sleep(reqDelay)
                 
             except Exception as e:
@@ -101,13 +103,14 @@ def runExtract():
                 conn.rollback()
                 errStr = str(e)
                 
+                # if google says, wait and retry
                 if "429" in errStr or "503" in errStr or "RESOURCE_EXHAUSTED" in errStr:
                     match = re.search(r'retry in ([0-9.]+)s', errStr)
                     waitSec = float(match.group(1)) + 2.0 if match else 25.0 * attempts
-                    print(f"[Rate limit] Google asked to wait {waitSec:.1f}s... (attempt {attempts}/5)")
+                    print(f"[rate limit] google told us to wait {waitSec:.1f}s (try {attempts}/5)")
                     time.sleep(waitSec)
                 else:
-                    print(f"[Error in batch] {e}")
+                    print(f"[batch error] {e}")
                     break
 
     conn.close()

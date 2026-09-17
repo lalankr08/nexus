@@ -12,7 +12,6 @@ def embedJobs():
     conn = psycopg2.connect(dbUrl)
     cursor = conn.cursor()
     
-    # Fetch jobs that don't have an embedding yet
     cursor.execute("""
         SELECT id, title, company, skills 
         FROM strList 
@@ -20,13 +19,19 @@ def embedJobs():
     """)
     jobs = cursor.fetchall()
 
+    if not jobs:
+        print("[done] all jobs already embedded, sweet")
+        conn.close()
+        return
+
+    print(f"[info] generating vectors for {len(jobs)} jobs...")
+
     for jid, title, comp, skills in jobs:
-        # Combine fields into a single semantic string
         skillStr = " ".join(skills) if skills else ""
         textToEmbed = f"Role: {title} at {comp}. Required skills: {skillStr}"
         
         try:
-            # gemini-embedding-001 with 768 dimensions for pgvector column
+            # 768 dims so pgvector doesn't get sad
             res = client.models.embed_content(
                 model="gemini-embedding-001",
                 contents=textToEmbed,
@@ -34,14 +39,13 @@ def embedJobs():
             )
             emb = res.embeddings[0].values
             
-            # Update the database
             cursor.execute("UPDATE strList SET emb = %s::vector WHERE id = %s", (emb, jid))
             conn.commit()
-            print(f"[Embedded] Job ID: {jid}")
+            print(f"[embedded] job {jid}")
             
         except Exception as e:
             conn.rollback()
-            print(f"[Error] Job ID: {jid} -> {e}")
+            print(f"[oops] job {jid} broke -> {e}")
 
     conn.close()
 

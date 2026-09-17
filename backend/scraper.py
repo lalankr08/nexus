@@ -38,14 +38,15 @@ def saveList(conn, src, srcUrl, rawText):
             VALUES (%s, %s, %s, %s)
         """, (srcUrl, src, rawText, nowIso()))
         conn.commit()
-        print(f"[Saved] {srcUrl}")
+        print(f"[saved] {srcUrl}")
     except IntegrityError:
         conn.rollback() 
-        print(f"[Dup] {srcUrl}")
+        print(f"[dup skipped] {srcUrl}")
 
 def scrapeHn(page, conn, maxPg=2):
     page.goto("https://news.ycombinator.com/jobs")
     for pg in range(maxPg):
+        # polite sleep so yc doesn't ban us
         time.sleep(reqDelay)
         rows = page.locator("tr.athing").all()
         for r in rows:
@@ -92,7 +93,6 @@ def main():
         scrapeGh(page, conn, maxPg=2)
         
         browser.close()
-    
     conn.close()
 
 if __name__ == "__main__":

@@ -3,14 +3,13 @@
 import "./globals.css";
 import { SessionProvider } from "next-auth/react";
 
+// wrapper so next-auth doesn't cry
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="bg-white">
-      <body className="w-full min-h-screen bg-white text-zinc-900 antialiased">
+    <html lang="en">
+      <body className="bg-white text-zinc-900 min-h-screen">
         <SessionProvider>
-          <div className="w-full max-w-5xl mx-auto px-6 py-10 md:py-12">
-            {children}
-          </div>
+          <div className="max-w-5xl mx-auto p-6 md:py-10">{children}</div>
         </SessionProvider>
       </body>
     </html>

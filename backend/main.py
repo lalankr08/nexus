@@ -1,9 +1,9 @@
 import io
+import os
+import psycopg2
+from dotenv import load_dotenv
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import psycopg2
-import os
-from dotenv import load_dotenv
 import pypdf
 import pymupdf
 from google import genai
@@ -11,7 +11,7 @@ from google.genai import types
 from google.genai.models import Models
 
 from scraper import setupDb, scrapeHn, scrapeGh
-from extract import runExtract  
+from extract import runExtract
 
 Models._logged_afc_warning = True
 load_dotenv()
@@ -29,36 +29,27 @@ app.add_middleware(
 )
 
 def runPipeline():
-    """Background task to sequence scraping then extraction."""
-    
     conn = setupDb()
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         ctx = browser.new_context(user_agent="NexusAgent/0.1")
         page = ctx.new_page()
-        
         scrapeHn(page, conn, maxPg=1)
         scrapeGh(page, conn, maxPg=1)
-        
         browser.close()
     conn.close()
-    
-    
     runExtract()
 
 @app.post("/api/sync")
 def triggerSync(bgTasks: BackgroundTasks):
-    """Frontend calls this to start the data pipeline without freezing the UI."""
     bgTasks.add_task(runPipeline)
-    return {"status": "ok", "msg": "Pipeline started in background"}
+    return {"status": "ok", "msg": "syncing in background"}
 
 @app.get("/api/jobs")
 def fetchJobs():
-    """Frontend calls this to display the structured data."""
     conn = psycopg2.connect(dbUrl)
     cursor = conn.cursor()
-    
     cursor.execute("""
         SELECT id, srcUrl, title, company, loc, isRemote, stipend, skills, expLvl, deadline 
         FROM strList
@@ -80,14 +71,13 @@ def fetchJobs():
             "expLvl": r[8],
             "deadline": r[9]
         })
-        
     return {"jobs": data}
 
 @app.post("/api/match")
 async def matchResume(file: UploadFile = File(...)):
     content = await file.read()
     
-    # 1. Try pypdf
+    # try pypdf first
     resText = ""
     try:
         pdf = pypdf.PdfReader(io.BytesIO(content))
@@ -95,7 +85,7 @@ async def matchResume(file: UploadFile = File(...)):
     except Exception:
         pass
 
-    # 2. Fallback to pymupdf
+    # fallback if pypdf choked
     if not resText.strip():
         try:
             doc = pymupdf.open(stream=content, filetype="pdf")
@@ -104,10 +94,11 @@ async def matchResume(file: UploadFile = File(...)):
         except Exception:
             pass
 
+    # if empty the pdf is probably a scanned ....
     if not resText or len(resText.strip()) < 10:
         return {
             "matches": [],
-            "error": "Could not extract text from this PDF. Please upload a PDF with selectable text."
+            "error": "could not read text from this pdf, make sure it has selectable text"
         }
 
     try:
@@ -120,12 +111,12 @@ async def matchResume(file: UploadFile = File(...)):
     except Exception as e:
         return {
             "matches": [],
-            "error": f"Failed to generate embedding: {str(e)}"
+            "error": f"embedding failed: {str(e)}"
         }
 
+    # math magic with pgvector
     conn = psycopg2.connect(dbUrl)
     cursor = conn.cursor()
-
     cursor.execute("""
         SELECT id, title, company, loc, srcUrl, 1 - (emb <=> %s::vector) AS score, skills 
         FROM strList 
@@ -139,7 +130,7 @@ async def matchResume(file: UploadFile = File(...)):
     if not rows:
         return {
             "matches": [],
-            "error": "No indexed listings found in database."
+            "error": "no jobs found with embeddings in db"
         }
 
     matches = []
@@ -151,9 +142,9 @@ async def matchResume(file: UploadFile = File(...)):
                 model="gemini-flash-lite-latest",
                 contents=prompt
             )
-            just = genRes.text.strip() if genRes.text else "Matches technical background and requirements."
+            just = genRes.text.strip() if genRes.text else "matches technical requirements"
         except Exception:
-            just = "Matches technical background and requirements."
+            just = "matches technical requirements"
 
         matches.append({
             "id": jid,
@@ -166,7 +157,4 @@ async def matchResume(file: UploadFile = File(...)):
             "just": just
         })
 
-    return {
-        "matches": matches,
-        "error": None
-    }
+    return {"matches": matches, "error": None}
