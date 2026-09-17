@@ -1,6 +1,7 @@
 import os
 import psycopg2
 from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,10 +26,11 @@ def embedJobs():
         textToEmbed = f"Role: {title} at {comp}. Required skills: {skillStr}"
         
         try:
-            # text-embedding-004 outputs a 768-dimensional vector
+            # gemini-embedding-001 with 768 dimensions for pgvector column
             res = client.models.embed_content(
-                model="text-embedding-004",
-                contents=textToEmbed
+                model="gemini-embedding-001",
+                contents=textToEmbed,
+                config=types.EmbedContentConfig(output_dimensionality=768)
             )
             emb = res.embeddings[0].values
             

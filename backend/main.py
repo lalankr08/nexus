@@ -1,11 +1,11 @@
-from fastapi import FastAPI, BackgroundTasks
+import io
+from fastapi import FastAPI, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import psycopg2
 import os
 from dotenv import load_dotenv
-
-from fastapi import UploadFile, File
 import pypdf
+import pymupdf
 from google import genai
 from google.genai import types
 from google.genai.models import Models
@@ -85,51 +85,88 @@ def fetchJobs():
 
 @app.post("/api/match")
 async def matchResume(file: UploadFile = File(...)):
+    content = await file.read()
+    
+    # 1. Try pypdf
+    resText = ""
+    try:
+        pdf = pypdf.PdfReader(io.BytesIO(content))
+        resText = "".join(pg.extract_text() or "" for pg in pdf.pages)
+    except Exception:
+        pass
 
-    pdf = pypdf.PdfReader(file.file)
-    resText = "".join(pg.extract_text() or "" for pg in pdf.pages)
-    
-    embRes = client.models.embed_content(
-        model="text-embedding-004", 
-        contents=resText
-    )
-    resVector = embRes.embeddings[0].values
-    
+    # 2. Fallback to pymupdf
+    if not resText.strip():
+        try:
+            doc = pymupdf.open(stream=content, filetype="pdf")
+            resText = "".join(page.get_text() for page in doc)
+            doc.close()
+        except Exception:
+            pass
+
+    if not resText or len(resText.strip()) < 10:
+        return {
+            "matches": [],
+            "error": "Could not extract text from this PDF. Please upload a PDF with selectable text."
+        }
+
+    try:
+        embRes = client.models.embed_content(
+            model="gemini-embedding-001", 
+            contents=resText[:5000],
+            config=types.EmbedContentConfig(output_dimensionality=768)
+        )
+        resVector = embRes.embeddings[0].values
+    except Exception as e:
+        return {
+            "matches": [],
+            "error": f"Failed to generate embedding: {str(e)}"
+        }
+
     conn = psycopg2.connect(dbUrl)
     cursor = conn.cursor()
-    
+
     cursor.execute("""
         SELECT id, title, company, loc, srcUrl, 1 - (emb <=> %s::vector) AS score, skills 
         FROM strList 
         WHERE emb IS NOT NULL
         ORDER BY emb <=> %s::vector 
-        LIMIT 3
+        LIMIT 5
     """, (resVector, resVector))
-    
-    matches = cursor.fetchall()
-    
-    data = []
-    
-    for m in matches:
-        jid, title, comp, loc, url, score, skills = m
-        prompt = f"Resume: {resText[:1500]}\nJob: {title} at {comp}. Skills: {skills}\nWrite exactly one short sentence justifying why this is a match."
-        
-        gen_res = client.models.generate_content(
-            model="gemini-flash-lite-latest",
-            contents=prompt
-        )
-        just = gen_res.text.strip() if gen_res.text else ""
-        
-        data.append({
-            "id": jid, 
-            "title": title, 
-            "company": comp, 
-            "loc": loc,
-            "url": url, 
-            "score": round(score, 2), 
-            "matchScore": round(score, 2), 
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        return {
+            "matches": [],
+            "error": "No indexed listings found in database."
+        }
+
+    matches = []
+    for r in rows:
+        jid, title, comp, loc, url, score, skills = r
+        prompt = f"Resume: {resText[:1200]}\nJob: {title} at {comp}. Skills: {skills}\nWrite exactly one short sentence justifying why this is a match."
+        try:
+            genRes = client.models.generate_content(
+                model="gemini-flash-lite-latest",
+                contents=prompt
+            )
+            just = genRes.text.strip() if genRes.text else "Matches technical background and requirements."
+        except Exception:
+            just = "Matches technical background and requirements."
+
+        matches.append({
+            "id": jid,
+            "title": title,
+            "company": comp,
+            "loc": loc or "Not specified",
+            "url": url,
+            "score": round(score, 2),
+            "matchScore": round(score, 2),
             "just": just
         })
-        
-    conn.close()
-    return {"matches": data}
+
+    return {
+        "matches": matches,
+        "error": None
+    }

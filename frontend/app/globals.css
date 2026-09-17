@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+html,
 body {
-  @apply bg-[#fafafa] text-zinc-900 font-sans antialiased;
+  background-color: #ffffff;
+  color: #18181b;
+  min-height: 100vh;
+  width: 100%;
+  margin: 0;
+  padding: 0;
 }

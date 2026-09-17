@@ -1,161 +1,295 @@
 "use client";
-import { useState } from "react";
+
+import { useState, useEffect } from "react";
 import { useSession, signIn, signOut } from "next-auth/react";
 
-interface JobMatch {
+interface MatchItem {
   id: number;
   title: string;
   company: string;
   loc?: string;
   url: string;
-  score?: number;
-  matchScore?: number;
+  matchScore: number;
   just: string;
 }
 
-export default function Page() {
-  const { data: session, status } = useSession();
-  const [results, setResults] = useState<JobMatch[]>([]);
-  const [loading, setLoading] = useState(false);
+interface JobItem {
+  id: number;
+  title: string;
+  company: string;
+  loc?: string;
+  srcUrl: string;
+  skills?: string[];
+}
 
+export default function Page() {
+  const { data: session } = useSession();
+  const [tab, setTab] = useState<"match" | "jobs">("match");
+  const [matches, setMatches] = useState<MatchItem[]>([]);
+  const [jobs, setJobs] = useState<JobItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const [errMsg, setErrMsg] = useState("");
+  const [syncMsg, setSyncMsg] = useState("");
+
+  // Fetch jobs on mount
+  useEffect(() => {
+    let active = true;
+    fetch("/api/py/jobs")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && data?.jobs) setJobs(data.jobs);
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Upload and analyze PDF resume
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setFileName(file.name);
+    setErrMsg("");
+    setMatches([]);
     setLoading(true);
-    const formData = new FormData();
-    formData.append("file", file);
+
+    const form = new FormData();
+    form.append("file", file);
 
     try {
-      const res = await fetch("http://localhost:8000/api/match", {
+      const res = await fetch("/api/py/match", {
         method: "POST",
-        body: formData,
+        body: form,
       });
+      const data = await res.json().catch(() => null);
 
-      if (!res.ok) throw new Error("Upload failed");
-      
-      const data = await res.json();
-      setResults(data.matches || []);
-    } catch (err) {
-      console.error(err);
-      alert("Error processing PDF. check backend on port 8000.");
+      if (!res.ok || data?.error) {
+        throw new Error(data?.error || "Failed to analyze resume. Please try another PDF.");
+      }
+
+      setMatches(data.matches || []);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Error analyzing resume.";
+      setErrMsg(msg);
     } finally {
       setLoading(false);
     }
   };
 
-  if (status === "loading") {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-zinc-50 dark:bg-zinc-950">
-        <p className="text-zinc-500 animate-pulse text-lg font-medium">Authenticating...</p>
-      </div>
-    );
-  }
+  // Trigger scraper and extract pipeline in background
+  const handleSync = async () => {
+    setSyncMsg("Starting sync...");
+    try {
+      const res = await fetch("/api/py/sync", { method: "POST" });
+      if (res.ok) {
+        setSyncMsg("Syncing jobs in background...");
+        setTimeout(() => setSyncMsg(""), 4000);
+      }
+    } catch {
+      setSyncMsg("Sync failed");
+      setTimeout(() => setSyncMsg(""), 3000);
+    }
+  };
 
-  // 2. Unauthenticated State (Login Screen)
-  if (status === "unauthenticated") {
-    return (
-      <main className="min-h-screen flex flex-col items-center justify-center p-8 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
-        <div className="max-w-md w-full space-y-8 text-center">
-          <h1 className="text-4xl font-extrabold tracking-tight">Nexus</h1>
-          <p className="text-zinc-600 dark:text-zinc-400">
-            Autonomous career intelligence. Upload your resume and find semantic job matches.
-          </p>
-          <button
-            onClick={() => signIn()}
-            className="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold transition-colors shadow-sm"
-          >
-            Sign In with GitHub / Google
-          </button>
-        </div>
-      </main>
-    );
-  }
-
-  // 3. Authenticated State (Dashboard)
   return (
-    <main className="min-h-screen p-8 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
-      <div className="max-w-6xl mx-auto">
-        
-        {/* Header */}
-        <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-10 pb-6 border-b border-zinc-200 dark:border-zinc-800">
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight">Nexus Dashboard</h1>
-            <p className="text-sm text-zinc-500 mt-1">Logged in as {session?.user?.email}</p>
-          </div>
-          <button
-            onClick={() => signOut()}
-            className="mt-4 sm:mt-0 px-4 py-2 text-sm font-medium bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 rounded-md transition-colors"
-          >
-            Sign Out
-          </button>
-        </header>
+    <main className="space-y-6">
+      {/* Header */}
+      <header className="border-b border-zinc-200 pb-4 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-zinc-900">Nexus</h1>
+          <p className="text-xs text-zinc-500 mt-0.5">
+            Autonomous career intelligence &amp; semantic job matching
+          </p>
+        </div>
 
-        {/* Upload Section */}
-        <div className="mb-10 bg-white dark:bg-zinc-900 p-6 rounded-xl border border-zinc-200 dark:border-zinc-800 shadow-sm">
-          <h2 className="text-lg font-semibold mb-4">Analyze Resume</h2>
-          <input 
-            type="file" 
-            accept="application/pdf" 
-            onChange={handleUpload}
-            disabled={loading}
-            className="block w-full text-sm text-zinc-500 file:mr-4 file:py-2.5 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 disabled:opacity-50 cursor-pointer transition-colors"
-          />
-          {loading && (
-            <p className="mt-4 text-sm font-medium animate-pulse text-blue-600 dark:text-blue-400">
-              Generating vector embeddings and calculating semantic matches...
-            </p>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleSync}
+            className="px-3 py-1.5 text-xs border border-zinc-200 rounded-md hover:bg-zinc-100"
+          >
+            Sync Jobs
+          </button>
+          {session ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-zinc-500">{session.user?.email}</span>
+              <button
+                onClick={() => signOut()}
+                className="text-xs text-zinc-600 hover:text-zinc-900 underline"
+              >
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => signIn()}
+              className="px-3 py-1.5 text-xs bg-zinc-900 text-white rounded-md hover:bg-zinc-800"
+            >
+              Sign in
+            </button>
           )}
         </div>
+      </header>
 
-        {/* Results Table */}
-        {results.length > 0 && (
-          <div className="overflow-hidden border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-sm bg-white dark:bg-zinc-900">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse min-w-[800px]">
-                <thead className="bg-zinc-100 dark:bg-zinc-950">
-                  <tr>
-                    <th className="p-4 font-semibold text-sm">Match</th>
-                    <th className="p-4 font-semibold text-sm">Role</th>
-                    <th className="p-4 font-semibold text-sm">Company</th>
-                    <th className="p-4 font-semibold text-sm">Location</th>
-                    <th className="p-4 font-semibold text-sm">Why it fits</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                  {results.map((job) => (
-                    <tr key={job.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
-                      <td className="p-4 font-bold text-blue-600 dark:text-blue-400">
-                        {Math.round((job.matchScore ?? job.score ?? 0) * 100)}%
-                      </td>
-                      <td className="p-4 font-medium">
-                        {job.url ? (
-                          <a
-                            href={job.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-blue-600 hover:underline dark:text-blue-400"
-                          >
-                            {job.title}
-                          </a>
-                        ) : (
-                          job.title
-                        )}
-                      </td>
-                      <td className="p-4 text-zinc-600 dark:text-zinc-300">{job.company}</td>
-                      <td className="p-4 text-zinc-600 dark:text-zinc-300 whitespace-nowrap">{job.loc || "Not specified"}</td>
-                      <td className="p-4 text-sm text-zinc-500 dark:text-zinc-400 min-w-[300px]">
-                        {job.just}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+      {syncMsg && <p className="text-xs text-blue-600 font-medium">{syncMsg}</p>}
+
+      {/* Tabs */}
+      <nav className="flex gap-2 border-b border-zinc-200 pb-2 text-sm">
+        <button
+          onClick={() => setTab("match")}
+          className={`px-3 py-1.5 rounded-md ${
+            tab === "match"
+              ? "bg-zinc-900 text-white"
+              : "text-zinc-600 hover:bg-zinc-100"
+          }`}
+        >
+          Match Resume {matches.length > 0 && `(${matches.length})`}
+        </button>
+        <button
+          onClick={() => setTab("jobs")}
+          className={`px-3 py-1.5 rounded-md ${
+            tab === "jobs"
+              ? "bg-zinc-900 text-white"
+              : "text-zinc-600 hover:bg-zinc-100"
+          }`}
+        >
+          Browse Jobs ({jobs.length})
+        </button>
+      </nav>
+
+      {/* Tab: Match Resume */}
+      {tab === "match" && (
+        <section className="space-y-6">
+          <div className="p-5 border border-zinc-200 bg-white rounded-lg space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-medium text-zinc-900">Upload Resume (PDF)</h2>
+              {fileName && (
+                <span className="text-xs text-zinc-500 font-mono bg-zinc-100 px-2 py-0.5 rounded">
+                  {fileName}
+                </span>
+              )}
             </div>
+            <p className="text-xs text-zinc-500">
+              Upload your PDF resume to generate embeddings and find semantic matches in your database.
+            </p>
+            <input
+              type="file"
+              accept="application/pdf"
+              onChange={handleUpload}
+              disabled={loading}
+              className="block w-full text-sm text-zinc-500 file:mr-3 file:py-1.5 file:px-3 file:border file:border-zinc-200 file:rounded-md file:bg-zinc-50 file:text-xs hover:file:bg-zinc-100 cursor-pointer"
+            />
+            {loading && (
+              <p className="text-xs text-blue-600 animate-pulse font-medium">
+                Reading PDF, generating vector embeddings, and ranking listings...
+              </p>
+            )}
+            {errMsg && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded text-xs text-red-700">
+                {errMsg}
+              </div>
+            )}
           </div>
-        )}
 
-      </div>
+          {/* Results: Top Matches */}
+          {matches.length > 0 ? (
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-zinc-800">
+                Top Semantic Matches ({matches.length})
+              </h3>
+              <div className="space-y-3">
+                {matches.map((m) => (
+                  <div
+                    key={m.id}
+                    className="p-4 border border-zinc-200 rounded-lg bg-white space-y-2.5 hover:border-zinc-300 transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h4 className="font-medium text-sm text-zinc-900">{m.title}</h4>
+                        <p className="text-xs text-zinc-500 mt-0.5">
+                          {m.company} {m.loc ? `• ${m.loc}` : ""}
+                        </p>
+                      </div>
+                      <span className="text-xs font-semibold px-2 py-1 bg-blue-50 text-blue-700 rounded">
+                        {Math.round(m.matchScore * 100)}% Match
+                      </span>
+                    </div>
+
+                    {/* One-line LLM justification */}
+                    <p className="text-xs text-zinc-600 bg-zinc-50 p-2.5 rounded border border-zinc-100">
+                      💡 {m.just}
+                    </p>
+
+                    {/* View Listing Link */}
+                    {m.url && (
+                      <div className="pt-1">
+                        <a
+                          href={m.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-block px-3 py-1 text-xs bg-zinc-900 text-white rounded hover:bg-zinc-800"
+                        >
+                          View Listing ↗
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : !loading && !errMsg ? (
+            <div className="p-8 border border-dashed border-zinc-200 rounded-lg text-center text-xs text-zinc-400">
+              Upload your PDF resume above to see semantic job matches and justifications.
+            </div>
+          ) : null}
+        </section>
+      )}
+
+      {/* Tab: Browse Jobs */}
+      {tab === "jobs" && (
+        <section className="space-y-4">
+          <div className="border border-zinc-200 rounded-lg bg-white overflow-hidden">
+            <table className="w-full text-left border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-zinc-200 bg-zinc-50 text-xs text-zinc-500">
+                  <th className="p-3">Role</th>
+                  <th className="p-3">Company</th>
+                  <th className="p-3">Location</th>
+                  <th className="p-3">Skills</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-200">
+                {jobs.map((j) => (
+                  <tr key={j.id} className="hover:bg-zinc-50">
+                    <td className="p-3 font-medium">
+                      {j.srcUrl ? (
+                        <a
+                          href={j.srcUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:underline text-zinc-900"
+                        >
+                          {j.title}
+                        </a>
+                      ) : (
+                        j.title
+                      )}
+                    </td>
+                    <td className="p-3 text-zinc-600">{j.company}</td>
+                    <td className="p-3 text-zinc-500 text-xs">{j.loc || "-"}</td>
+                    <td className="p-3 text-xs text-zinc-500">
+                      {Array.isArray(j.skills) ? j.skills.slice(0, 3).join(", ") : "-"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </main>
   );
 }
