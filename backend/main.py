@@ -1,5 +1,7 @@
 import io
 import os
+from typing import Optional
+from pydantic import BaseModel
 import psycopg2
 from dotenv import load_dotenv
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File
@@ -12,8 +14,10 @@ from google.genai.models import Models
 
 from scraper import setupDb, scrapeHn, scrapeGh
 from extract import runExtract
+from agent import askAgent
 
 Models._logged_afc_warning = True
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 load_dotenv()
 dbUrl = os.getenv("DATABASE_URL")
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
@@ -158,3 +162,86 @@ async def matchResume(file: UploadFile = File(...)):
         })
 
     return {"matches": matches, "error": None}
+
+class ShortlistReq(BaseModel):
+    email: str
+    jobId: int
+    matchScore: Optional[float] = None
+    just: Optional[str] = ""
+
+@app.get("/api/shortlist")
+def fetchShortlist(email: str = ""):
+    if not email:
+        return {"shortlist": []}
+    
+    conn = psycopg2.connect(dbUrl)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT s.id, s.jobId, s.matchScore, s.just, j.title, j.company, j.loc, j.srcUrl
+        FROM shortlist s
+        JOIN strList j ON s.jobId = j.id
+        JOIN users u ON s.userId = u.id
+        WHERE u.email = %s
+        ORDER BY s.id DESC
+    """, (email,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    items = []
+    for r in rows:
+        items.append({
+            "id": r[0],
+            "jobId": r[1],
+            "matchScore": r[2],
+            "just": r[3],
+            "title": r[4],
+            "company": r[5],
+            "loc": r[6],
+            "url": r[7]
+        })
+    return {"shortlist": items}
+
+@app.post("/api/shortlist")
+def toggleShortlist(req: ShortlistReq):
+    # save or unsave job for this user
+    if not req.email:
+        return {"status": "error", "msg": "email required"}
+    
+    conn = psycopg2.connect(dbUrl)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO users (email) 
+        VALUES (%s) 
+        ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email 
+        RETURNING id;
+    """, (req.email,))
+    uid = cursor.fetchone()[0]
+
+    cursor.execute("SELECT id FROM shortlist WHERE userId = %s AND jobId = %s", (uid, req.jobId))
+    exists = cursor.fetchone()
+
+    if exists:
+        cursor.execute("DELETE FROM shortlist WHERE userId = %s AND jobId = %s", (uid, req.jobId))
+        action = "removed"
+    else:
+        cursor.execute("""
+            INSERT INTO shortlist (userId, jobId, matchScore, just)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (userId, jobId) DO NOTHING
+        """, (uid, req.jobId, req.matchScore or 0.0, req.just or ""))
+        action = "saved"
+
+    conn.commit()
+    conn.close()
+    return {"status": action, "jobId": req.jobId}
+
+class ChatReq(BaseModel):
+    message: str
+    email: Optional[str] = ""
+
+@app.post("/api/chat")
+def chatAgent(req: ChatReq):
+    # let agent query tools and answer
+    reply = askAgent(req.message, email=req.email or "")
+    return {"reply": reply}

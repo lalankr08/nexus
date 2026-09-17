@@ -29,18 +29,22 @@ I split the whole system into separate, independent stages so that if one stage 
                  ▼ (Stored as pgvector embeddings)
       [ strList.emb Column ]
                  │
-    ┌────────────┴────────────┐
-    ▼                         ▼
- [ FastAPI: /api/match ]   [ Next.js Frontend ]
- (PDF Parsing + Cosine     (Clean Dashboard + Live
-  Similarity + Just)        Matches & Catalog View)
+    ┌────────────┴───────────────────────────┐
+    ▼                                        ▼
+ [ FastAPI Backend Services ]          [ Next.js Frontend Dashboard ]
+ - /api/match (PDF + Cosine Search)    - Match Resume Tab
+ - /api/chat (Agent Tool Calling)      - Saved List Tab (Shortlist)
+ - /api/shortlist (Multi-tenant DB)    - Browse Jobs Tab
+ - /api/jobs (Live Catalog API)        - Career Agent Chat Tab
 ```
 
 1. **Scraping**: `scraper.py` uses Playwright to open job boards, handle pagination, and collect the raw post text and source URL.
 2. **Structuring**: `extract.py` takes the raw text, sends it in batches to Gemini Flash Lite, and forces the response into a fixed JSON schema so we get consistent fields like title, company, location, skills, and stipend.
 3. **Embedding**: `embed.py` combines the job title, company, and required skills into a semantic text string and calls `gemini-embedding-001` to generate a 768-dimensional vector, storing it into the `emb` column in PostgreSQL.
 4. **Resume Matching**: When a user uploads a resume PDF, FastAPI extracts the text (using `pypdf` with a `pymupdf` fallback), generates a vector embedding for the resume, and runs a cosine distance query (`emb <=> resVector`) against the database to rank the closest matching jobs. Then Gemini writes a one-line explanation for why each role fits.
-5. **Frontend**: A clean, minimal Next.js dashboard where users can view live catalog listings and upload their resume to see semantic matches with match percentages and justifications.
+5. **The Agent**: `agent.py` connects Gemini Flash Lite directly to PostgreSQL via native function calling (`get_saved_jobs`, `get_top_skills`, and `search_jobs`). It lets users ask questions in plain English without hallucinations or prompt dumping.
+6. **Multi-Tenant Saved List**: Users can save jobs to their shortlist with a single click. In the backend, items are joined against the authenticated user's ID in the database so each user has their own private saved roles with scores and justifications.
+7. **Frontend**: A clean, minimal Next.js dashboard with dedicated tabs for Resume Matching, Saved Shortlist, Browse Jobs, and an interactive Career Agent Chat interface with 1-click query suggestions and markdown link rendering.
 
 ---
 
@@ -186,13 +190,19 @@ Open [http://localhost:3000](http://localhost:3000) in your browser. Next.js aut
 
 ## Project Status: What is Done & What is Next
 
-### What is Completed (Steps 1, 2, and 3):
+### What is Completed:
 * **Step 1 (The Scraper):** Scrapes live listings from two different public sources (Hacker News and GitHub), handles pagination, stores source URLs and timestamps, and avoids duplicates.
 * **Step 2 (LLM Structured Extraction):** Batches raw listings, validates against a strict schema using Gemini Flash Lite, handles rate limits gracefully with backoff, and caches so no listing is parsed twice.
-* **Step 3 (Resume Matching & Semantic Search):** Users can upload a resume PDF. The backend extracts text with dual-engine fallback (`pypdf` + `pymupdf`), computes vector embeddings, finds the top matches using pgvector cosine distance, and generates a one-line explanation for each match. Results are displayed on the frontend with match percentages and direct links to the job post.
+* **Step 3 (Resume Matching & Semantic Search):** Users can upload a resume PDF. The backend extracts text with dual-engine fallback (`pypdf` + `pymupdf`), computes vector embeddings, finds the top matches using pgvector cosine distance, and generates a one-line explanation for each match.
+* **Step 4 (The Agent):** Natural language career agent powered by Gemini tool calling with 3 distinct database tools (`get_saved_jobs`, `get_top_skills`, `search_jobs`). Queries PostgreSQL live without dumping prompt rows, and features an interactive chat UI with suggested queries and clickable markdown links.
+* **Step 6 (Authentication, Persistence & Shortlist):** NextAuth session authentication with Google OAuth, multi-tenant shortlist database persistence per user (scoped to `users.id`), and clean text save toggles with a dedicated "Saved List" view.
 
 ### What is Unfinished & Planned for Next:
-* **Step 4 (The Agent Chat UI):** Building an interactive chat interface where users can ask questions about jobs and have the LLM query the database using function / tool calling.
-* **Step 5 (Video Briefing):** Generating an asynchronous 60-90 second avatar video or TTS audio briefing summarizing the top three matches of the week.
-* **Step 6 (Full Multi-tenancy Isolation):** Setting up private database sessions so each user's saved data and briefings are strictly isolated.
-* **Bonus (Automated Scheduling):** Running the scraping and extraction pipeline on a scheduled cron job (like GitHub Actions) instead of manual terminal runs.
+* **Step 5 (Video Briefing):** Generating an asynchronous 60-90 second avatar video or TTS audio briefing summarizing the top three matches of the week (LLM script generation -> async API job lifecycle polling `queued -> processing -> done/failed` -> in-app playback).
+  The way i would solve it would be:
+  1. Take top 3 matches from shortlist and prompt gemini flash lite to write an engaging 60-90 seconds spoken script with details about the roles, required skills, and why they fit there.
+  2. Send the script to the video/audio provider (HeyGen / Edge-TTS / ElevenLabs as audio fallback if credits run out). It immediately returns a job ID with queued status so we never block request threads.
+  3. Handle the async job lifecycle in the background (queued -> processing -> done / failed). A worker or polling endpoint checks the status, and once finished, stores the final media URL in the database.
+  4. Show a clean progress state on the frontend while rendering, then embed an in-app player so the user can play their briefing right from the dashboard and access past briefings from their shortlist.
+
+
